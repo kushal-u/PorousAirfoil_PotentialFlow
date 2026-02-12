@@ -10,6 +10,8 @@ a custom implementation of the Source–Panel–Vortex–Porous (SPVP) method.
 
 import numpy as np
 import math as math
+import os                       # Added for directory handling
+import matplotlib.pyplot as plt # Added for saving figures
 
 # Importing custom modules from the project
 from COMPUTATION.SPVP_Airfoil import SPVP                          # Main SPVP computation function
@@ -47,8 +49,6 @@ if __name__ == '__main__':
     #==================================
     # Generate boundary coordinates for the NACA airfoil
     XB, YB = GENERATE_NACA4(NameAirfoil, NumPan=numPan, power=power)
-
-    #YB[0], YB[-1] = 0, 0
 
     # Compute panel geometry based on boundary coordinates and angle of attack
     XC, YC, S, phi, delta, beta = GENERATE_GEOMETRY(numPan, XB, YB, AoAR)
@@ -93,11 +93,39 @@ if __name__ == '__main__':
     #%% ================================
     #           Visualization
     #==================================
+    
+    # 1. Turn on interactive mode to prevent code from stopping if PLOT_ALL has plt.show()
+    plt.ion()
+
     # Generate all requested plots
     PLOT_ALL(
         flagPlot,XB,YB,numPan,XC,YC,S,delta,Cp,phi,Vinf,AoA,lam,gamma
     )
 
+    # 2. Save Logic
+    # Create a directory for results if it doesn't exist
+    save_dir = "Results"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+        print(f"Created directory: {save_dir}")
+
+    # Get all open figure numbers
+    fignums = plt.get_fignums()
+    
+    print("======= SAVING FIGURES =======")
+    for i in fignums:
+        # Define a filename based on Airfoil name, AoA, and Figure Number
+        filename = f"NACA{NameAirfoil}_AoA{AoA}_Fig{i}.png"
+        filepath = os.path.join(save_dir, filename)
+        
+        # Switch to the figure and save it
+        plt.figure(i)
+        plt.savefig(filepath, dpi=300, bbox_inches='tight')
+        print(f"Saved: {filepath}")
+
+    # 3. Turn interactive mode off and show plots to user
+    plt.ioff()
+    
     #%% ================================
     #            Output results
     #==================================
@@ -112,3 +140,6 @@ if __name__ == '__main__':
 
     print("Drag Coefficient (CD)")
     print("  SPVP : %2.8f" % CD)
+
+    # Keep windows open until manually closed
+    plt.show()

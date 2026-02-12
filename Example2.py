@@ -10,6 +10,8 @@ distributions and geometry features.
 
 import numpy as np
 import math as math
+import os                       # Added: To handle directory creation
+import matplotlib.pyplot as plt # Added: To handle figure saving
 
 from PLOT import *
 from COMPUTATION.Hydraulic_Resistance import Hydraulic_Resistance
@@ -39,18 +41,18 @@ if __name__ == "__main__":
                 0]      # Cp contour
 
     # Porous region geometry
-    type = 'rectangle'                      # Pore shape
-    pore_geometry = [0.157, 0.0125]          # Dimensions of the pore section
-    L = 0.89                                # Length of the porous medium
-    a = 0.0125                               # Height of the pores
-    n = 1 / 0.166                           # Porosity coefficient (1/spacing)
+    type = 'rectangle'                          # Pore shape
+    pore_geometry = [0.157, 0.0125]             # Dimensions of the pore section
+    L = 0.89                                    # Length of the porous medium
+    a = 0.0125                                  # Height of the pores
+    n = 1 / 0.166                               # Porosity coefficient (1/spacing)
     y0 = -0.02
     angle_pore = 0
 
     # Convergence criteria for the porous solver
-    max_iter = 100                          # Max number of iterations
-    tol = 1e-8                              # Convergence tolerance
-    err = 100                               # Initial error value (arbitrary)
+    max_iter = 100                              # Max number of iterations
+    tol = 1e-8                                  # Convergence tolerance
+    err = 100                                   # Initial error value (arbitrary)
 
     #%% INITIALIZATION
 
@@ -137,6 +139,9 @@ if __name__ == "__main__":
         POROUS_SPVP(tol, max_iter, Pore_characteristics, Fluid_characteristics, Airfoil_geometry)
 
     # %% PLOTTING RESULTS
+    
+    # Turn on interactive mode so code continues even if PLOT functions use plt.show()
+    plt.ion() 
 
     # Plot airfoil with porous sections
     PLOT_AIRFOIL(XB, YB, low_point, high_point, alone=0)
@@ -147,12 +152,16 @@ if __name__ == "__main__":
 
     # Plot Cp distribution on the pressure side
     """PLOT_CP_PRESSURE_SIDE(XC, YC, Cp, Cp_inter_low, low_point,
-                          pore_intern_co_XC_low, alone=False)
+                           pore_intern_co_XC_low, alone=False)
 
     # Plot Cp distribution on the suction side
     PLOT_CP_SUCCION_SIDE(XC, YC, Cp, Cp_inter_high, high_point,
-                         pore_intern_co_XC_high, alone=False)
+                          pore_intern_co_XC_high, alone=False)
     """
+    
+    # Final plot: full diagnostics depending on flags
+    PLOT_ALL(flagPlot, XB, YB, numPan, XC, YC, S, delta, Cp, phi, Vinf, AoA, lam, gamma)
+
     # Print aerodynamic coefficients
     print('CL_Porous = ', CL)
     print('CL_solid = ', CL_Solid)
@@ -160,6 +169,26 @@ if __name__ == "__main__":
     print('CD_solid = ', CD_Solid)
     print('CL_improvement = ', (CL-CL_Solid)/CL)
 
-    # Final plot: full diagnostics depending on flags
-    PLOT_ALL(flagPlot, XB, YB, numPan, XC, YC, S, delta, Cp, phi, Vinf, AoA, lam, gamma)
+    # %% SAVE GRAPHS
+    print("======= SAVING FIGURES =======")
+    
+    # 1. Create directory
+    save_dir = "Results_Porous"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    
+    # 2. Iterate through all open figures and save them
+    # This works regardless of which PLOT functions above were called
+    fignums = plt.get_fignums()
+    
+    for i in fignums:
+        filename = f"Porous_NACA{NameAirfoil}_AoA{AoA}_Fig{i}.png"
+        filepath = os.path.join(save_dir, filename)
+        
+        plt.figure(i) # Select the figure
+        plt.savefig(filepath, dpi=300, bbox_inches='tight')
+        print(f"Saved: {filepath}")
 
+    # 3. Finalize
+    plt.ioff() # Turn off interactive mode
+    plt.show() # Keep windows open for user to view
