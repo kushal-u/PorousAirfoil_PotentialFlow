@@ -8,8 +8,6 @@ import matplotlib.gridspec as gridspec
 import matplotlib.path as mpath
 import warnings
 import os
-from scipy.interpolate import griddata
-import matplotlib.path as mpath
 
 # Suppress runtime warnings
 warnings.filterwarnings("ignore")
@@ -20,12 +18,12 @@ warnings.filterwarnings("ignore")
 # Geometry & Mesh
 AIRFOIL_NAME = "0018"
 N_PANELS = 320       # Number of panels
-N_PORES = 15         # Number of pores on surface
+N_PORES = 32         # Number of pores on surface
 
 # Porous Region
 X_START = 0.01     
 X_END = 0.99       
-PORE_RADIUS = 4000e-6   # 2mm
+PORE_RADIUS = 2000e-6   # 2mm
 
 # Physics
 REYNOLDS_NUM = 250000   
@@ -220,62 +218,87 @@ class PanelMethod:
 # ==============================================================================
 # 4. STRUCTURED POROUS MESH GENERATION
 # ==============================================================================
-def generate_tangential_mesh(xc, yc, tx, ty, cp_solid, n_target, pore_radius, mu):
+def generate_tangential_mesh(xc, yc, tx, ty, pore_radius, mu):
     """
-    Generates a 'Cross-Flow Plenum' network.
-    
-    Correction:
-      - Strictly enforces Outlet location at x > 0.85 on Top Surface.
-      - Uses Plenum model to decouple inlet/outlet counts.
+    Generates a High-Efficiency network connecting Mid-Chord Pressure side
+    to Aft-Chord Suction side using Tangential Injection logic.
     """
-    import networkx as nx
     G = nx.Graph()
+    porous_indices = []
     
-    plenum_id = 99999 
-    plenum_pos = np.array([0.5, 0.0])
-    G.add_node(plenum_id, pos=plenum_pos, type='internal')
+    # --- 1. Define Zones (The "Smart" Selection) ---
+    # Inlet: Bottom surface (Pressure), Mid-Chord
+    inlet_candidates = []
+    for i in range(len(xc)):
+        # Check if on Bottom (yc < 0) and within 40-70% Chord
+        if yc[i] < 0 and 0.40 <= xc[i] <= 0.70:
+            inlet_candidates.append(i)
+
+    # Outlet: Top surface (Suction), Aft-Chord
+    outlet_candidates = []
+    for i in range(len(xc)):
+        # Check if on Top (yc > 0) and within 75-95% Chord
+        if yc[i] > 0 and 0.75 <= xc[i] <= 0.95:
+            outlet_candidates.append(i)
+
+    # Consolidate active indices for the solver
+    porous_indices = list(set(inlet_candidates + outlet_candidates))
     
-    # --- Configuration ---
-    N_INLETS = 40
-    R_INLET  = 3000e-6
+    # Add nodes to Graph
+    for idx in porous_indices:
+        G.add_node(idx, pos=(xc[idx], yc[idx]), type='boundary', panel_idx=idx)
+
+    # --- 2. Vector-Based Connection Logic ---
+    # We brute-force check every Inlet-Outlet pair and filter by angle.
     
-    N_OUTLETS = 15
-    R_OUTLET = 4000e-6
+    connections_made = 0
     
-    # 1. Define Zones (Strict Filtering)
-    # Outlet: Top Surface (y > 0) AND Aft (x > 0.85)
-    # sorting by x descending ensures we get the very trailing edge
-    outlet_candidates = [i for i in range(len(xc)) if yc[i] > 0 and xc[i] >= 0.85]
-    
-    # Inlet: Bottom Surface (y < 0) AND Forward (0.02 < x < 0.20)
-    inlet_candidates = [i for i in range(len(xc)) if yc[i] < 0 and 0.02 <= xc[i] <= 0.20]
-    
-    # 2. Select Inlets (Best Cp - Highest Pressure)
-    inlet_scores = [{'id': i, 'cp': cp_solid[i]} for i in inlet_candidates]
-    inlet_scores.sort(key=lambda x: x['cp'], reverse=True)
-    selected_inlets = [x['id'] for x in inlet_scores[:N_INLETS]]
-    
-    # 3. Select Outlets (Rearmost points)
-    outlet_scores = [{'id': i, 'x': xc[i]} for i in outlet_candidates]
-    outlet_scores.sort(key=lambda x: x['x'], reverse=True) # Max x = TE
-    selected_outlets = [x['id'] for x in outlet_scores[:N_OUTLETS]]
-    
-    # 4. Connect
-    for u in selected_inlets:
-        length = np.linalg.norm(np.array([xc[u], yc[u]]) - plenum_pos)
-        cond = (np.pi * R_INLET**4) / (8 * mu * length)
-        if u not in G: G.add_node(u, pos=(xc[u], yc[u]), type='boundary', panel_idx=u)
-        G.add_edge(u, plenum_id, length=length, cond=cond, type='plenum_in')
+    for i in inlet_candidates:
+        p_in = np.array([xc[i], yc[i]])
         
-    for v in selected_outlets:
-        length = np.linalg.norm(np.array([xc[v], yc[v]]) - plenum_pos)
-        cond = (np.pi * R_OUTLET**4) / (8 * mu * length)
-        if v not in G: G.add_node(v, pos=(xc[v], yc[v]), type='boundary', panel_idx=v)
-        G.add_edge(plenum_id, v, length=length, cond=cond, type='plenum_out')
-        
-    print(f"   -> Cross-Flow Plenum: {len(selected_inlets)} Inlets -> {len(selected_outlets)} Outlets (TE).")
+        for j in outlet_candidates:
+            p_out = np.array([xc[j], yc[j]])
+            
+            # Vector of the pore (Internal Flow Direction)
+            vec_pore = p_out - p_in
+            len_pore = np.linalg.norm(vec_pore)
+            dir_pore = vec_pore / len_pore
+            
+            # Vector of the surface flow at outlet (External Flow Direction)
+            # Note: In panel methods, 'tx, ty' usually point CW. 
+            # On top surface, CW is Trailing->Leading (Backwards).
+            # So the flow direction is -tx, -ty.
+            vec_surf = np.array([-tx[j], -ty[j]]) 
+            
+            # Calculate Alignment (Dot Product)
+            # cos(theta) = dot(a, b)
+            dot_prod = np.dot(dir_pore, vec_surf)
+            
+            # Clamp for numerical safety
+            dot_prod = max(min(dot_prod, 1.0), -1.0)
+            angle_deg = np.degrees(np.arccos(dot_prod))
+            
+            # --- 3. The Filter (The "Smooth Merge" Check) ---
+            # We strictly enforce shallow angles (Tangential Injection).
+            # We also ensure the pore isn't absurdly long (optional check).
+            if angle_deg < 25.0: 
+                # Calculate Conductance (Hagen-Poiseuille)
+                cond = (np.pi * pore_radius**4) / (8 * mu * len_pore)
+                
+                G.add_edge(i, j, length=len_pore, cond=cond, type='standard')
+                connections_made += 1
+
+    # Remove isolated nodes (panels selected in zones but found no valid partner)
+    isolates = list(nx.isolates(G))
+    G.remove_nodes_from(isolates)
     
-    return G, selected_inlets + selected_outlets
+    # Update porous_indices to only include connected nodes
+    final_indices = [n for n in G.nodes()]
+    
+    print(f"   -> Tangential Logic: Created {connections_made} connections.")
+    
+    return G, final_indices
+
 # ==============================================================================
 # 5. INTERNAL FLOW SOLVER
 # ==============================================================================
@@ -328,89 +351,162 @@ def solve_internal_flow(G, P_boundary):
 
     return velocities, P_nodes
 
-# ==============================================================================
-# 6. PLOTTING RESULTS (COMPLETE: CSV + CONTOUR)
-# ==============================================================================
-def plot_results(aero, Cp, Cp_solid, V_leakage, CL, CL_solid, CD, CD_solid, G, P_nodes, output_dir="porous_airfoil_results"):
+def plot_results(aero, Cp, Cp_solid, V_leakage, CL, CL_solid, CD, CD_solid, G, output_dir="porous_airfoil_results"):
     
-    # 1. Determine Output Path
+    # --- CHANGED: DETERMINE PATH RELATIVE TO SCRIPT LOCATION ---
     try:
+        # If running as a script, use the script's directory
         base_dir = os.path.dirname(os.path.abspath(__file__))
     except NameError:
+        # If running in Jupyter/Interactive, fallback to CWD
         base_dir = os.getcwd()
 
     full_output_dir = os.path.join(base_dir, output_dir)
+
     if not os.path.exists(full_output_dir):
         os.makedirs(full_output_dir)
         print(f"-> Created output directory: {full_output_dir}")
     else:
-        print(f"-> Saving results to: {full_output_dir}")
+        print(f"-> Saving images to existing directory: {full_output_dir}")
 
-    # --- 2. SAVE CSV DATA (RESTORED) ---
-    csv_path = os.path.join(full_output_dir, 'simulation_data.csv')
+    # ==========================================================================
+    # SAVE RESULTS TO CSV
+    # ==========================================================================
+    csv_path = os.path.join(output_dir, 'simulation_data.csv')
+    print(f"-> Exporting numerical data to: {csv_path}")
+    
     try:
         with open(csv_path, 'w') as f:
+            # 1. Write Global Aerodynamic Coefficients
             f.write("--- GLOBAL RESULTS ---\n")
             f.write("Metric,Solid_Baseline,Porous_Result,Change_Percent\n")
-            # Handle potential division by zero if CL/CD are 0
+            
             cl_change = ((CL - CL_solid) / (abs(CL_solid) + 1e-9)) * 100
             cd_change = ((CD - CD_solid) / (abs(CD_solid) + 1e-9)) * 100
-            f.write(f"CL,{CL_solid:.6f},{CL:.6f},{cl_change:.2f}%\n")
-            f.write(f"CD,{CD_solid:.6f},{CD:.6f},{cd_change:.2f}%\n\n")
             
+            f.write(f"CL (Lift Coeff),{CL_solid:.6f},{CL:.6f},{cl_change:.2f}%\n")
+            f.write(f"CD (Drag Coeff),{CD_solid:.6f},{CD:.6f},{cd_change:.2f}%\n")
+            f.write("\n") # Empty line for separation
+            
+            # 2. Write Detailed Panel Distribution Data
             f.write("--- PANEL DISTRIBUTION DATA ---\n")
-            f.write("Panel_ID,XC,YC,Cp_Solid,Cp_Porous,V_leakage\n")
+            # Header
+            f.write("Panel_ID,XC,YC,Nx,Ny,Panel_Length,Cp_Solid,Cp_Porous,Cp_Difference,V_leakage\n")
+            
+            # Data Rows
             for i in range(aero.N):
-                f.write(f"{i},{aero.XC[i]:.6f},{aero.YC[i]:.6f},{Cp_solid[i]:.6f},{Cp[i]:.6f},{V_leakage[i]:.6f}\n")
-        print(f"-> CSV Data saved successfully.")
-    except Exception as e:
-        print(f"ERROR saving CSV: {e}")
+                cp_diff = Cp[i] - Cp_solid[i]
+                line = (f"{i},"
+                        f"{aero.XC[i]:.6f},{aero.YC[i]:.6f},"
+                        f"{aero.nx[i]:.6f},{aero.ny[i]:.6f},"
+                        f"{aero.L[i]:.6f},"
+                        f"{Cp_solid[i]:.6f},{Cp[i]:.6f},"
+                        f"{cp_diff:.6f},{V_leakage[i]:.6f}\n")
+                f.write(line)
+                
+    except IOError as e:
+        print(f"Error saving CSV file: {e}")
 
-    # --- 3. PLOTTING ---
-    # Use Agg backend to prevent GUI crashes
-    import matplotlib
-    matplotlib.use('Agg') 
-    
-    # --- FIGURE 1: Geometry & Cp ---
-    print("-> Generating Figure 1...")
+    # ==========================================================================
+    # PLOTTING LOGIC
+    # ==========================================================================
+
+    # --- FIGURE 1: Original Geometry & Network ---
     fig1 = plt.figure(figsize=(12, 12))
     gs1 = gridspec.GridSpec(2, 1, height_ratios=[1, 1.2])
 
     ax1 = fig1.add_subplot(gs1[0])
-    ax1.plot(aero.X, aero.Y, 'k-', linewidth=2, label="Airfoil")
+    ax1.plot(aero.X, aero.Y, 'k-', linewidth=2, label="Airfoil Surface")
     ax1.fill(aero.X, aero.Y, 'whitesmoke')
 
     pos = nx.get_node_attributes(G, 'pos')
-    nx.draw_networkx_edges(G, pos, ax=ax1, edge_color='cyan', alpha=0.6, width=1.5)
-    nx.draw_networkx_nodes(G, pos, nodelist=G.nodes(), ax=ax1, node_size=30, node_color='black')
-    ax1.set_title("1. Geometry & Porous Network", fontsize=14); ax1.axis('equal')
+    std_edges = [(u, v) for u, v, d in G.edges(data=True) if d.get('type') == 'standard']
+    rescue_edges = [(u, v) for u, v, d in G.edges(data=True) if d.get('type') == 'rescue']
+    nx.draw_networkx_edges(G, pos, ax=ax1, edgelist=std_edges, edge_color='cyan', alpha=0.6, width=1.5)
+    nx.draw_networkx_edges(G, pos, ax=ax1, edgelist=rescue_edges, edge_color='blue', alpha=0.8, width=1.5, style=':')
 
+    boundary_nodes = [n for n in G.nodes() if G.nodes[n]['type'] == 'boundary']
+    internal_nodes = [n for n in G.nodes() if G.nodes[n]['type'] == 'internal']
+    nx.draw_networkx_nodes(G, pos, nodelist=boundary_nodes, ax=ax1, node_size=30, node_color='black', label='Surface Pores')
+    nx.draw_networkx_nodes(G, pos, nodelist=internal_nodes, ax=ax1, node_size=60, node_color='orange', edgecolors='black', label='Internal Nodes')
+
+    ax1.set_title("1. Geometry & Porous Network Structure", fontsize=14)
+    ax1.set_xlabel("x/c"); ax1.set_ylabel("y/c"); ax1.axis('equal'); ax1.legend(loc='lower right')
+
+    # Subplot 2: Cp
     ax2 = fig1.add_subplot(gs1[1])
-    ax2.plot(aero.XC, Cp_solid, 'k--', label=f'Solid ($C_L = {CL_solid:.3f}$)')
+    ax2.plot(aero.XC, Cp_solid, 'k--', label=f'Solid Wall ($C_L = {CL_solid:.3f}$)')
     ax2.plot(aero.XC, Cp, 'b-', label=f'Porous ($C_L = {CL:.3f}$)')
-    ax2.invert_yaxis(); ax2.grid(True, alpha=0.3); ax2.legend()
+    ax2.invert_yaxis()
     ax2.set_title("2. Pressure Coefficient ($C_p$)", fontsize=14)
+    ax2.set_xlabel("x/c"); ax2.set_ylabel("Cp"); ax2.legend(); ax2.grid(True, alpha=0.3)
     
-    fig1.savefig(os.path.join(full_output_dir, '01_Geometry_and_Cp.png'), dpi=300, bbox_inches='tight')
-    plt.close(fig1)
+    txt = f"CL Solid: {CL_solid:.4f}\nCL Porous: {CL:.4f}\nCL Change: {((CL-CL_solid)/(abs(CL_solid)+1e-9))*100:.1f}%"
+    ax2.text(0.02, 0.05, txt, transform=ax2.transAxes, bbox=dict(facecolor='white', alpha=0.8))
 
-    # --- FIGURE 3: Surface Vectors ---
-    print("-> Generating Figure 3...")
+    plt.tight_layout()
+    fig1.savefig(os.path.join(output_dir, '01_Geometry_and_Cp.png'), dpi=300, bbox_inches='tight')
+
+    # --- FIGURE 3: Pressure Vectors ---
     fig3 = plt.figure(figsize=(10, 6))
     ax5 = fig3.add_subplot(111)
-    ax5.plot(aero.X, aero.Y, 'k-', linewidth=2)
+    
+    ax5.plot(aero.X, aero.Y, 'k-', linewidth=2, label='Airfoil')
     ax5.fill(aero.X, aero.Y, 'whitesmoke')
     
     U_p = -Cp * aero.nx * 0.15
     V_p = -Cp * aero.ny * 0.15
-    ax5.quiver(aero.XC, aero.YC, U_p, V_p, Cp, cmap='coolwarm_r', scale=1, scale_units='xy', width=0.004)
-    ax5.set_title("3. Surface Pressure & Leakage", fontsize=14); ax5.axis('equal')
+    q = ax5.quiver(aero.XC, aero.YC, U_p, V_p, Cp, cmap='coolwarm_r', scale=1, scale_units='xy', width=0.004)
+    plt.colorbar(q, ax=ax5, label='Cp')
     
-    fig3.savefig(os.path.join(full_output_dir, '03_Pressure_Vectors.png'), dpi=300, bbox_inches='tight')
-    plt.close(fig3)
+    suction_idx = [i for i in range(aero.N) if V_leakage[i] < -1e-4]
+    blowing_idx = [i for i in range(aero.N) if V_leakage[i] > 1e-4]
+    
+    if suction_idx:
+        ax5.scatter(aero.XC[suction_idx], aero.YC[suction_idx], color='green', marker='v', s=60, zorder=5, label='Inflow')
+    if blowing_idx:
+        ax5.scatter(aero.XC[blowing_idx], aero.YC[blowing_idx], color='magenta', marker='^', s=60, zorder=5, label='Outflow')
 
-    # --- FIGURE 5: External Flow Field ---
-    print("-> Generating Figure 5...")
+    ax5.set_title("3. Surface Pressure Vectors & Flow Direction", fontsize=14)
+    ax5.axis('equal'); ax5.grid(True, linestyle=':', alpha=0.6); ax5.legend(loc='lower right')
+    plt.tight_layout()
+    fig3.savefig(os.path.join(output_dir, '03_Pressure_Vectors.png'), dpi=300, bbox_inches='tight')
+
+    # --- FIGURE 4: Lift Loss & Flow Map (UPDATED: Removed Breathing Profile) ---
+    fig4 = plt.figure(figsize=(10, 8)) # Reduced height slightly
+    gs4 = gridspec.GridSpec(2, 1, height_ratios=[1, 1])
+    
+    # Lift Loss Visualization
+    ax6 = fig4.add_subplot(gs4[0])
+    ax6.plot(aero.XC, Cp_solid, 'k--', linewidth=1, label='Solid')
+    ax6.plot(aero.XC, Cp, 'b-', linewidth=2, label='Porous')
+    ax6.fill_between(aero.XC, Cp_solid, Cp, color='red', alpha=0.15, hatch='///', label='Lift Loss')
+    ax6.invert_yaxis()
+    ax6.set_title("4. Lift Loss Visualization", fontsize=14)
+    ax6.set_ylabel("Cp"); ax6.legend(); ax6.grid(True, alpha=0.3)
+
+    # Map of Inflow/Outflow Zones
+    ax7 = fig4.add_subplot(gs4[1])
+    ax7.plot(aero.X, aero.Y, 'k-', linewidth=2)
+    ax7.fill(aero.X, aero.Y, 'whitesmoke')
+    if suction_idx:
+        ax7.scatter(aero.XC[suction_idx], aero.YC[suction_idx], color='green', marker='v', s=80, label='Inflow')
+    if blowing_idx:
+        ax7.scatter(aero.XC[blowing_idx], aero.YC[blowing_idx], color='magenta', marker='^', s=80, label='Outflow')
+    ax7.set_title("Map of Inflow/Outflow Zones", fontsize=14)
+    ax7.axis('equal'); ax7.grid(True, linestyle=':', alpha=0.6); ax7.legend(loc='lower right')
+    
+    plt.tight_layout()
+    fig4.savefig(os.path.join(output_dir, '04_Lift_Loss_Map.png'), dpi=300, bbox_inches='tight')
+
+    # --- FIGURE 5: Simplified Flow Visualization ---
+    print("-> Calculating Streamlines for visualization...")
+    
+    # Setup Globals safely
+    v_inf_local = globals().get('V_INF', 1.0)
+    reynolds_local = globals().get('REYNOLDS_NUM', 100000)
+
+    # External Flow Field
     x_min, x_max = -0.5, 1.5; y_min, y_max = -0.6, 0.6
     Xg, Yg = np.meshgrid(np.linspace(x_min, x_max, 100), np.linspace(y_min, y_max, 100))
     Ug, Vg = aero.compute_velocity_field(Xg, Yg)
@@ -418,103 +514,55 @@ def plot_results(aero, Cp, Cp_solid, V_leakage, CL, CL_solid, CD, CD_solid, G, P
 
     fig5 = plt.figure(figsize=(12, 7))
     ax9 = fig5.add_subplot(111)
-    ax9.contourf(Xg, Yg, vel_mag, levels=50, cmap='viridis', extend='both', alpha=0.9)
-    if np.max(vel_mag) > 1e-6:
-        seed_points = np.column_stack((np.ones(40) * x_min, np.linspace(y_min, y_max, 40)))
-        ax9.streamplot(Xg, Yg, Ug, Vg, color='white', linewidth=0.8, density=2, start_points=seed_points)
+    
+    # Background Contour
+    levels = np.linspace(0, 1.5*v_inf_local, 50)
+    cf = ax9.contourf(Xg, Yg, vel_mag, levels=levels, cmap='viridis', extend='both', alpha=0.9)
+    plt.colorbar(cf, ax=ax9, label='Velocity Magnitude [m/s]', pad=0.02)
+    
+    # Streamlines
+    seed_points = np.column_stack((np.ones(40) * x_min, np.linspace(y_min, y_max, 40)))
+    ax9.streamplot(Xg, Yg, Ug, Vg, color='white', linewidth=0.8, arrowsize=0.8, density=2, start_points=seed_points)
+    
+    # Airfoil Geometry (Black fill)
     ax9.fill(aero.X, aero.Y, color='black', zorder=3)
-    ax9.set_title("5. External Flow Field", fontsize=14); ax9.axis('equal')
+
+    # Internal Network Structure (Faint lines for context)
+    pos = nx.get_node_attributes(G, 'pos')
+    nx.draw_networkx_edges(G, pos, ax=ax9, edge_color='gray', alpha=0.3, width=0.8)
+
+    # Highlight Inflow/Outflow
+    suction_mask = V_leakage < -1e-4
+    blowing_mask = V_leakage > 1e-4
+    scale_arrow = 0.08
     
-    fig5.savefig(os.path.join(full_output_dir, '05_Flow_Field.png'), dpi=300, bbox_inches='tight')
-    plt.close(fig5)
+    if np.any(suction_mask):
+        ax9.quiver(aero.XC[suction_mask], aero.YC[suction_mask], 
+                   aero.nx[suction_mask]*V_leakage[suction_mask]*scale_arrow, 
+                   aero.ny[suction_mask]*V_leakage[suction_mask]*scale_arrow, 
+                   color='lime', scale=1, scale_units='xy', width=0.006, zorder=6, label='Inflow (Suction)')
+                   
+    if np.any(blowing_mask):
+        ax9.quiver(aero.XC[blowing_mask], aero.YC[blowing_mask], 
+                   aero.nx[blowing_mask]*V_leakage[blowing_mask]*scale_arrow, 
+                   aero.ny[blowing_mask]*V_leakage[blowing_mask]*scale_arrow, 
+                   color='magenta', scale=1, scale_units='xy', width=0.006, zorder=6, label='Outflow (Blowing)')
 
-    # --- FIGURE 6: INTERNAL FLOW CONTOUR (NEW) ---
-    print("-> Generating Figure 6 (Internal Flow Contour)...")
+    ax9.set_title(f"5. Flow Field & Surface Pore Activity (Re={int(reynolds_local)})", fontsize=14, weight='bold')
+    ax9.set_xlim(x_min, x_max); ax9.set_ylim(y_min, y_max); ax9.set_aspect('equal')
     
-    # 1. Gather Data Points from the Graph Edges
-    points = []
-    values = []
-    
-    # Map nodes to indices for Pressure lookup
-    node_list = list(G.nodes())
-    node_map = {node: i for i, node in enumerate(node_list)}
-    
-    max_v_found = 0.0
+    # Legend
+    from matplotlib.lines import Line2D
+    custom_lines = [Line2D([0], [0], color='lime', lw=2),
+                    Line2D([0], [0], color='magenta', lw=2),
+                    Line2D([0], [0], color='gray', lw=1, alpha=0.5)]
+    ax9.legend(custom_lines, ['Inflow', 'Outflow', 'Porous Network'], loc='upper right')
 
-    for u, v, data in G.edges(data=True):
-        idx_u, idx_v = node_map[u], node_map[v]
-        pos_u, pos_v = np.array(pos[u]), np.array(pos[v])
-        
-        Pu, Pv = P_nodes[idx_u], P_nodes[idx_v]
-        delta_P = abs(Pu - Pv)
-        length = np.linalg.norm(pos_v - pos_u)
-        
-        # Velocity Magnitude
-        velocity_mag = (PORE_RADIUS**2 * delta_P) / (8 * MU * length)
-        if velocity_mag > max_v_found: max_v_found = velocity_mag
+    plt.tight_layout()
+    fig5.savefig(os.path.join(output_dir, '05_Flow_Field.png'), dpi=300, bbox_inches='tight')
 
-        # We sample points along the edge to "fill" the space for the contour
-        # Interpolate 5 points along every pipe
-        num_samples = 5
-        for t in np.linspace(0, 1, num_samples):
-            pt = pos_u + t * (pos_v - pos_u)
-            points.append(pt)
-            values.append(velocity_mag)
-
-    points = np.array(points)
-    values = np.array(values)
-
-    fig6 = plt.figure(figsize=(14, 8))
-    ax_int = fig6.add_subplot(111)
-
-    # Draw Airfoil Shape
-    ax_int.plot(aero.X, aero.Y, 'k-', linewidth=3, color='#333333', zorder=10)
-
-    if len(points) > 0:
-        # 2. Create Grid for Contour
-        # Define grid bounds based on airfoil
-        min_x, max_x = min(aero.X), max(aero.X)
-        min_y, max_y = min(aero.Y), max(aero.Y)
-        
-        grid_x, grid_y = np.mgrid[min_x:max_x:200j, min_y:max_y:200j]
-        
-        # 3. Interpolate discrete pipe data onto the grid
-        # 'linear' works best here to connect the pipes visually
-        grid_z = griddata(points, values, (grid_x, grid_y), method='linear', fill_value=0)
-
-        # 4. Mask the grid (keep only points INSIDE the airfoil)
-        # Create a path from the airfoil coordinates
-        airfoil_poly = np.column_stack((aero.X, aero.Y))
-        path = mpath.Path(airfoil_poly)
-        
-        # Flatten the grid to check points
-        grid_points = np.column_stack((grid_x.ravel(), grid_y.ravel()))
-        mask = path.contains_points(grid_points)
-        mask = mask.reshape(grid_x.shape)
-        
-        # Apply mask (NaN out points outside)
-        grid_z[~mask] = np.nan
-
-        # 5. Plot the Contour
-        # Use 100 levels for smoothness
-        contour = ax_int.contourf(grid_x, grid_y, grid_z, levels=100, cmap='plasma', zorder=1)
-        
-        # Add Colorbar
-        cbar = plt.colorbar(contour, ax=ax_int, pad=0.02)
-        cbar.set_label('Internal Pore Velocity [m/s]', fontsize=12)
-
-    # Overlay the network faintly so we see the structure
-    nx.draw_networkx_edges(G, pos, ax=ax_int, edge_color='white', alpha=0.3, width=0.5)
-
-    ax_int.set_title(f"6. Internal Flow Distribution\nMax Velocity: {max_v_found:.2f} m/s", fontsize=16)
-    ax_int.set_xlabel("x/c"); ax_int.set_ylabel("y/c")
-    ax_int.axis('equal')
-    ax_int.set_xlim(0.0, 1.05)
-    
-    fig6.savefig(os.path.join(full_output_dir, '06_Internal_Flow_Map_Contour.png'), dpi=300, bbox_inches='tight')
-    plt.close(fig6)
-
-    print(f"-> All figures saved to: {full_output_dir}")
+    plt.show()
+    print(f"-> All figures and data saved to: {os.path.abspath(output_dir)}")
 
 # ==============================================================================
 # 7. MAIN LOOP
@@ -529,7 +577,7 @@ def run_simulation():
     print("-> Solving Baseline (Solid)...")
     Cp_solid = aero.solve(np.zeros(aero.N))
 
-    # --- 1. Calculate SOLID Forces ---
+    # [Force Calculation Code Omitted for Brevity - keep your existing lines here]
     fx_elem = -Cp_solid * aero.nx * aero.L
     fy_elem = -Cp_solid * aero.ny * aero.L
     Fx_solid = np.sum(fx_elem)
@@ -538,34 +586,33 @@ def run_simulation():
     CD_solid = Fx_solid * np.cos(aero.alpha) + Fy_solid * np.sin(aero.alpha)
     print(f"   Baseline CL: {CL_solid:.4f}")
 
-    # Generate Mesh
-    print("-> Generating Asymmetric Plenum Mesh...")
+    # --- MODIFIED SECTION START ---
+    print("-> Generating High-Efficiency Tangential Mesh...")
+    
+    # CALL THE NEW FUNCTION HERE
+    # We pass tx, ty to calculate injection angles
     G, porous_pids = generate_tangential_mesh(
-        aero.XC, aero.YC, aero.tx, aero.ty, Cp_solid, 
-        15, PORE_RADIUS, MU
+        aero.XC, aero.YC, aero.tx, aero.ty, 
+        PORE_RADIUS, MU
     )
     
     print(f"   Generated network with {len(G.nodes())} nodes.")
+    # --- MODIFIED SECTION END ---
 
+    # [Solver Loop - keep your existing lines here]
     V_leakage = np.zeros(aero.N)
-    final_P_nodes = np.zeros(len(G.nodes()))  # Initialize
-
-    # --- Iteration Loop ---
     for i in range(MAX_ITER):
         Cp = aero.solve(V_leakage)
         q_inf = 0.5 * RHO * V_INF**2
         P_ext = P_INF + q_inf * Cp
         P_map = {pid: P_ext[pid] for pid in porous_pids}
-        
-        # Internal Flow Solver
-        V_calculated, P_nodes_iter = solve_internal_flow(G, P_map)
-        final_P_nodes = P_nodes_iter # Store for plotting
+        V_calculated, _ = solve_internal_flow(G, P_map)
 
-        # Relaxation
         max_diff = 0.0
         V_new = V_leakage.copy()
         for pid, v_calc in V_calculated.items():
             v_relaxed = RELAXATION * v_calc + (1 - RELAXATION) * V_leakage[pid]
+            # Tweak: Increase limiter slightly for tangential jets
             v_relaxed = max(min(v_relaxed, 80.0), -80.0) 
             diff = abs(v_relaxed - V_leakage[pid])
             if diff > max_diff: max_diff = diff
@@ -578,21 +625,17 @@ def run_simulation():
         elif i % 10 == 0:
              print(f"   Iter {i}: Max Resid = {max_diff:.6f}")
 
-    # --- 2. Calculate POROUS Forces (THIS WAS MISSING) ---
+    # [Final Calculation Code - keep your existing lines here]
     fx_elem = -Cp * aero.nx * aero.L
     fy_elem = -Cp * aero.ny * aero.L
     Fx_porous = np.sum(fx_elem)
     Fy_porous = np.sum(fy_elem)
-    
-    # Calculate Lift and Drag
     CL = Fy_porous * np.cos(aero.alpha) - Fx_porous * np.sin(aero.alpha)
     CD = Fx_porous * np.cos(aero.alpha) + Fy_porous * np.sin(aero.alpha)
 
     print(f"-> Final Results: Solid CL={CL_solid:.4f}, Porous CL={CL:.4f}")
-    
-    # Pass everything to the plotter
-    plot_results(aero, Cp, Cp_solid, V_leakage, CL, CL_solid, CD, CD_solid, G, final_P_nodes)
+    plot_results(aero, Cp, Cp_solid, V_leakage, CL, CL_solid, CD, CD_solid, G)
 
 if __name__ == "__main__":
     run_simulation()
-
+    

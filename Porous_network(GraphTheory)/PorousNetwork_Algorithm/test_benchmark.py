@@ -20,12 +20,12 @@ warnings.filterwarnings("ignore")
 # Geometry & Mesh
 AIRFOIL_NAME = "0018"
 N_PANELS = 320       # Number of panels
-N_PORES = 15         # Number of pores on surface
+N_PORES = 50         # Number of pores on surface
 
 # Porous Region
 X_START = 0.01     
 X_END = 0.99       
-PORE_RADIUS = 4000e-6   # 2mm
+PORE_RADIUS = 5000e-6   # 2mm
 
 # Physics
 REYNOLDS_NUM = 250000   
@@ -542,7 +542,7 @@ def run_simulation():
     print("-> Generating Asymmetric Plenum Mesh...")
     G, porous_pids = generate_tangential_mesh(
         aero.XC, aero.YC, aero.tx, aero.ty, Cp_solid, 
-        15, PORE_RADIUS, MU
+        50, PORE_RADIUS, MU
     )
     
     print(f"   Generated network with {len(G.nodes())} nodes.")

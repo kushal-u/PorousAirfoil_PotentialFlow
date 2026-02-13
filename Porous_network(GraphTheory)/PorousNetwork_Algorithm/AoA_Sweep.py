@@ -28,90 +28,93 @@ def calculate_forces(aero, Cp):
     
     return CL, CD
 
-def run_sweep(aoa_range, pore_radius, label_name, capture_angles=[0, 5, 10]):
-    print(f"\n--- STARTING SWEEP: {label_name} (Radius={pore_radius*1000:.1f}mm) ---")
+def run_sweep(angles, pore_radius, label, capture_angles=[]):
+    print(f"\n--- STARTING SWEEP: {label} (Radius={pore_radius*1000:.1f}mm) ---")
     
-    # Use the global PORE_RADIUS in test if needed, though we pass it explicitly too
-    test.PORE_RADIUS = pore_radius
-    
-    # Pre-Generate Mesh
-    # We create a temporary aero object (at 0 deg) to get geometric properties
-    X, Y = test.naca4(test.AIRFOIL_NAME, n_panels=test.N_PANELS)
-    temp_aero = test.PanelMethod(X, Y, 0.0)
-    
-    # --- FIX: Updated arguments to match generate_tangential_mesh signature ---
-    # New Signature: (xc, yc, tx, ty, pore_radius, mu)
-    G, porous_pids = test.generate_tangential_mesh(
-        temp_aero.XC, 
-        temp_aero.YC, 
-        temp_aero.tx, 
-        temp_aero.ty, 
-        pore_radius, 
-        test.MU
-    )
-    # ------------------------------------------------------------------------
-    
+    # Storage for results
     results = {
         'alpha': [],
         'cl_solid': [], 'cd_solid': [],
         'cl_porous': [], 'cd_porous': [],
         'delta_cl': [], 'delta_r_cl': [],
-        'cp_data': {}  # New storage for Cp distributions
+        'cp_data': {}
     }
 
-    # Using tqdm for progress bar
-    for alpha_deg in tqdm(aoa_range):
-        results['alpha'].append(alpha_deg)
-        
-        # 1. Initialize Solver
-        aero = test.PanelMethod(X, Y, alpha_deg)
-        
-        # 2. Solid Case
-        Cp_solid = aero.solve(np.zeros(aero.N))
-        cl_s, cd_s = calculate_forces(aero, Cp_solid)
-        results['cl_solid'].append(cl_s)
-        results['cd_solid'].append(cd_s)
-        
-        # 3. Porous Case
-        V_leakage = np.zeros(aero.N)
-        for i in range(50): 
-            Cp = aero.solve(V_leakage)
-            q_inf = 0.5 * test.RHO * test.V_INF**2
-            P_ext = test.P_INF + q_inf * Cp
-            P_map = {pid: P_ext[pid] for pid in porous_pids}
-            V_calculated, _ = test.solve_internal_flow(G, P_map)
-            
-            V_new = V_leakage.copy()
-            max_diff = 0.0
-            for pid, v_calc in V_calculated.items():
-                v_relaxed = test.RELAXATION * v_calc + (1 - test.RELAXATION) * V_leakage[pid]
-                # Limiter for numerical stability
-                v_relaxed = max(min(v_relaxed, 50.0), -50.0)
-                if abs(v_relaxed - V_leakage[pid]) > max_diff: max_diff = abs(v_relaxed - V_leakage[pid])
-                V_new[pid] = v_relaxed
-            V_leakage = V_new
-            if max_diff < test.CONVERGENCE_TOL: break
-        
-        cl_p, cd_p = calculate_forces(aero, Cp)
-        results['cl_porous'].append(cl_p)
-        results['cd_porous'].append(cd_p)
-        
-        # Calculate Deltas
-        d_cl = cl_p - cl_s
-        if abs(cl_s) > 1e-4: d_r_cl = (cl_p - cl_s) / abs(cl_s)
-        else: d_r_cl = 0.0
-            
-        results['delta_cl'].append(d_cl)
-        results['delta_r_cl'].append(d_r_cl)
+    for alpha in angles:
+        # 1. Geometry & Solver Setup
+        X, Y = test.naca4(test.AIRFOIL_NAME, n_panels=test.N_PANELS)
+        aero = test.PanelMethod(X, Y, alpha)
 
-        # 4. CAPTURE CP DATA (For specific angles)
-        # Using a slight tolerance for float comparison or exact integer match
-        if any(abs(alpha_deg - ca) < 0.01 for ca in capture_angles):
-            results['cp_data'][alpha_deg] = {
+        # 2. Solve Baseline (Solid)
+        Cp_solid = aero.solve(np.zeros(aero.N))
+
+        # Calculate Solid Forces
+        fx_solid = -Cp_solid * aero.nx * aero.L
+        fy_solid = -Cp_solid * aero.ny * aero.L
+        Fx_s = np.sum(fx_solid)
+        Fy_s = np.sum(fy_solid)
+        CL_s = Fy_s * np.cos(aero.alpha) - Fx_s * np.sin(aero.alpha)
+        CD_s = Fx_s * np.cos(aero.alpha) + Fy_s * np.sin(aero.alpha)
+
+        # 3. Generate Mesh
+        G, porous_pids = test.generate_tangential_mesh(
+            aero.XC, aero.YC, aero.tx, aero.ty, 
+            Cp_solid,       
+            test.N_PORES,   
+            pore_radius, 
+            test.MU         
+        )
+
+        # 4. Porous Iteration Loop
+        V_leakage = np.zeros(aero.N)
+        Cp_porous = Cp_solid.copy()
+
+        for i in range(test.MAX_ITER):
+            Cp_porous = aero.solve(V_leakage)
+            q_inf = 0.5 * test.RHO * test.V_INF**2
+            P_ext = test.P_INF + q_inf * Cp_porous
+            P_map = {pid: P_ext[pid] for pid in porous_pids}
+            
+            V_calc, _ = test.solve_internal_flow(G, P_map)
+            
+            max_diff = 0.0
+            V_new = V_leakage.copy()
+            for pid, v in V_calc.items():
+                v_rel = test.RELAXATION * v + (1 - test.RELAXATION) * V_leakage[pid]
+                v_rel = max(min(v_rel, 80.0), -80.0) 
+                if abs(v_rel - V_leakage[pid]) > max_diff: max_diff = abs(v_rel - V_leakage[pid])
+                V_new[pid] = v_rel
+            V_leakage = V_new
+            
+            if max_diff < test.CONVERGENCE_TOL:
+                break
+
+        # 5. Calculate Porous Forces
+        fx_porous = -Cp_porous * aero.nx * aero.L
+        fy_porous = -Cp_porous * aero.ny * aero.L
+        Fx_p = np.sum(fx_porous)
+        Fy_p = np.sum(fy_porous)
+        CL_p = Fy_p * np.cos(aero.alpha) - Fx_p * np.sin(aero.alpha)
+        CD_p = Fx_p * np.cos(aero.alpha) + Fy_p * np.sin(aero.alpha)
+
+        # 6. Store Data
+        results['alpha'].append(alpha)
+        results['cl_solid'].append(CL_s)
+        results['cd_solid'].append(CD_s)
+        results['cl_porous'].append(CL_p)
+        results['cd_porous'].append(CD_p)
+        results['delta_cl'].append(CL_p - CL_s)
+        results['delta_r_cl'].append((CL_p - CL_s)/(abs(CL_s) + 1e-9))
+
+        print(f"   Alpha={alpha:>5.1f} | CL_Solid={CL_s:.4f} | CL_Porous={CL_p:.4f} | Delta={((CL_p-CL_s)/(abs(CL_s)+1e-9))*100:.2f}%")
+
+        # Capture Cp profiles for specific angles
+        if alpha in capture_angles:
+            results['cp_data'][alpha] = {
                 'xc': aero.XC,
-                'cp_solid': Cp_solid.copy(),
-                'cp_porous': Cp.copy(),
-                'leakage': V_leakage.copy()
+                'cp_solid': Cp_solid,
+                'cp_porous': Cp_porous,
+                'leakage': V_leakage  # <--- THIS WAS MISSING
             }
 
     return results
@@ -196,13 +199,26 @@ def save_sweep_data(res1, res2, name1, name2, output_dir="aoa_sweep_results"):
         print(f"Error saving Cp CSV: {e}")
 
 # ==============================================================================
-# 3. PLOTTING ROUTINE (SAVES IMAGES)
+# 3. PLOTTING ROUTINE 
 # ==============================================================================
-
 def plot_full_comparison(res1, res2, name1, name2, output_dir="aoa_sweep_results"):
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    # --- 1. Determine Absolute Path Relative to Script ---
+    try:
+        # Get the directory where this script is located
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        # Fallback if running in an interactive shell (e.g., Jupyter)
+        base_dir = os.getcwd()
 
+    # Combine script directory with the requested output folder name
+    full_output_dir = os.path.join(base_dir, output_dir)
+
+    # Create the directory if it doesn't exist
+    if not os.path.exists(full_output_dir):
+        os.makedirs(full_output_dir)
+        print(f"-> Created output directory: {full_output_dir}")
+
+    # --- 2. Setup Data ---
     alphas = np.array(res1['alpha'])
     
     style_solid = {'color': 'gray', 'linestyle': '--', 'linewidth': 1.5, 'label': 'Solid Baseline'}
@@ -212,7 +228,11 @@ def plot_full_comparison(res1, res2, name1, name2, output_dir="aoa_sweep_results
     # --- PAGE 1: Polars ---
     fig1 = plt.figure(figsize=(14, 10))
     gs1 = fig1.add_gridspec(2, 2)
-    fig1.suptitle(f"Page 1: Aerodynamic Polars Comparison (Re={int(test.REYNOLDS_NUM)})", fontsize=16)
+    
+    # Note: Assuming 'test.REYNOLDS_NUM' is available globally or passed in. 
+    # If not, remove the specific Reynolds number reference or pass it as an arg.
+    re_num = int(globals().get('REYNOLDS_NUM', 250000)) # Fallback if variable missing
+    fig1.suptitle(f"Page 1: Aerodynamic Polars Comparison (Re={re_num})", fontsize=16)
 
     ax1 = fig1.add_subplot(gs1[0, 0])
     ax1.plot(alphas, res1['cl_solid'], **style_solid)
@@ -228,6 +248,7 @@ def plot_full_comparison(res1, res2, name1, name2, output_dir="aoa_sweep_results
     ax2.set_title("2. Drag Polar", fontsize=12)
     ax2.set_xlabel("$C_D$"); ax2.set_ylabel("$C_L$"); ax2.grid(True, alpha=0.5)
 
+    # Calculate L/D safely (avoid divide by zero)
     ld_solid = np.array(res1['cl_solid']) / (np.array(res1['cd_solid']) + 1e-9)
     ld_case1 = np.array(res1['cl_porous']) / (np.array(res1['cd_porous']) + 1e-9)
     ld_case2 = np.array(res2['cl_porous']) / (np.array(res2['cd_porous']) + 1e-9)
@@ -239,7 +260,9 @@ def plot_full_comparison(res1, res2, name1, name2, output_dir="aoa_sweep_results
     ax3.set_title("3. Efficiency ($L/D$)", fontsize=12)
     ax3.set_xlabel("Alpha (deg)"); ax3.set_ylabel("$L/D$"); ax3.grid(True, alpha=0.5)
     plt.tight_layout()
-    fig1.savefig(os.path.join(output_dir, "01_Polars_Comparison.png"), dpi=300, bbox_inches='tight')
+    
+    # SAVE to absolute path
+    fig1.savefig(os.path.join(full_output_dir, "01_Polars_Comparison.png"), dpi=300, bbox_inches='tight')
 
     # --- PAGE 2: Lift Deltas ---
     fig2, (ax4, ax5, ax6) = plt.subplots(1, 3, figsize=(16, 5))
@@ -251,7 +274,6 @@ def plot_full_comparison(res1, res2, name1, name2, output_dir="aoa_sweep_results
     ax4.set_title("4. Reference Lift Curve", fontsize=12)
     ax4.set_xlabel("Alpha (deg)"); ax4.set_ylabel("$C_L$"); ax4.grid(True, alpha=0.5); ax4.legend()
 
-    # Create arrays and ensure no NaN/Inf for plotting
     y_pct1 = np.array(res1['delta_r_cl'])*100
     y_pct2 = np.array(res2['delta_r_cl'])*100
     
@@ -265,16 +287,16 @@ def plot_full_comparison(res1, res2, name1, name2, output_dir="aoa_sweep_results
     ax6.set_title(r"6. Absolute Change ($\Delta C_L$)", fontsize=12)
     ax6.set_xlabel("Alpha (deg)"); ax6.set_ylabel(r"$\Delta C_L$"); ax6.grid(True, alpha=0.5); ax6.axhline(0, color='gray')
     plt.tight_layout()
-    fig2.savefig(os.path.join(output_dir, "02_Lift_Deltas.png"), dpi=300, bbox_inches='tight')
+    
+    # SAVE to absolute path
+    fig2.savefig(os.path.join(full_output_dir, "02_Lift_Deltas.png"), dpi=300, bbox_inches='tight')
 
     # --- PAGE 3: Cp Distributions ---
     captured_angles = sorted(list(res1['cp_data'].keys()))
     if captured_angles:
-        # Create subplots. If many angles, wrap logic or just limit to first 3-4
         n_plots = len(captured_angles)
         fig3, axes = plt.subplots(1, n_plots, figsize=(5*n_plots, 6))
         
-        # Ensure axes is iterable even if only 1 plot
         if n_plots == 1: axes = [axes]
         
         fig3.suptitle("Page 3: Pressure Coefficient ($C_p$) Distributions", fontsize=16)
@@ -292,44 +314,67 @@ def plot_full_comparison(res1, res2, name1, name2, output_dir="aoa_sweep_results
             ax.grid(True, alpha=0.3)
             ax.legend(loc='lower right', fontsize=9)
         plt.tight_layout()
-        fig3.savefig(os.path.join(output_dir, "03_Cp_Distributions.png"), dpi=300, bbox_inches='tight')
+        
+        # SAVE to absolute path
+        fig3.savefig(os.path.join(full_output_dir, "03_Cp_Distributions.png"), dpi=300, bbox_inches='tight')
 
-    plt.show()
-    print(f"-> All plots saved to: {os.path.abspath(output_dir)}")
+    #plt.show()
+    print(f"-> All plots saved to: {full_output_dir}")
+
 
 # ==============================================================================
-# 4. MAIN EXECUTION
+# 4. MAIN EXECUTION (Corrected for Path)
 # ==============================================================================
 if __name__ == "__main__":
     # ==========================================
     # USER CONFIGURATION
     # ==========================================
     AOA_START = -5.0   # Start Angle (degrees)
-    AOA_END   = 10.0    # End Angle (degrees)
-    AOA_STEP  = 1.0     # Step size (degrees)
+    AOA_END   = 10.0   # End Angle (degrees)
+    AOA_STEP  = 1.0    # Step size (degrees)
     
     TARGET_CP_ANGLES = [-5, 5, 10] 
 
-    OUTPUT_FOLDER = "aoa_sweep_results"
+    OUTPUT_FOLDER_NAME = "aoa_sweep_results"
     
     # Radii definitions
-    RADIUS_1 = 2000e-6  # 2.0mm
-    RADIUS_2 = 1000e-6  # 1.0mm
+    RADIUS_1 = 4000e-6  # 2.0mm
+    RADIUS_2 = 2000e-6  # 1.0mm
     
     # ==========================================
+    # PATH SETUP
+    # ==========================================
+    # Determine absolute path to the directory containing THIS script
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        script_dir = os.getcwd() # Fallback
+        
+    # Create the full absolute path for output
+    ABS_OUTPUT_PATH = os.path.join(script_dir, OUTPUT_FOLDER_NAME)
     
-    if not os.path.exists(OUTPUT_FOLDER):
-        os.makedirs(OUTPUT_FOLDER)
-        print(f"Created directory: {OUTPUT_FOLDER}")
+    if not os.path.exists(ABS_OUTPUT_PATH):
+        os.makedirs(ABS_OUTPUT_PATH)
+        print(f"Created absolute output directory: {ABS_OUTPUT_PATH}")
+    else:
+        print(f"Using existing output directory: {ABS_OUTPUT_PATH}")
 
+    # ==========================================
+    # EXECUTION
+    # ==========================================
     # Create angle array
     angles = np.arange(AOA_START, AOA_END + 0.1, AOA_STEP)
     
     label1 = f"Radius {RADIUS_1*1000:.1f}mm"
     label2 = f"Radius {RADIUS_2*1000:.1f}mm"
 
+    # Run simulations (Assuming run_sweep is defined in your previous code)
+    print("Running Sweep 1...")
     res1 = run_sweep(angles, RADIUS_1, label1, capture_angles=TARGET_CP_ANGLES)
+    
+    print("Running Sweep 2...")
     res2 = run_sweep(angles, RADIUS_2, label2, capture_angles=TARGET_CP_ANGLES)
     
-    save_sweep_data(res1, res2, label1, label2, output_dir=OUTPUT_FOLDER)
-    plot_full_comparison(res1, res2, label1, label2, output_dir=OUTPUT_FOLDER)
+    # Pass the Absolute Path to the saving/plotting functions
+    save_sweep_data(res1, res2, label1, label2, output_dir=ABS_OUTPUT_PATH)
+    plot_full_comparison(res1, res2, label1, label2, output_dir=ABS_OUTPUT_PATH)
