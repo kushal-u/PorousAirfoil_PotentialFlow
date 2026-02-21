@@ -2,10 +2,8 @@
 import numpy as np
 from dataclasses import dataclass
 
-
 @dataclass
 class Config:
-    """Central configuration for physics and geometry."""
     # File / Output
     AIRFOIL_NAME: str = "0018"
     OUTPUT_DIR: str = "porous_airfoil_results"
@@ -16,7 +14,7 @@ class Config:
 
     # Porous Network Settings
     PORE_RADIUS_INLET: float = 10000e-6
-    PORE_RADIUS_OUTLET: float = 10000e-6
+    PORE_RADIUS_OUTLET: float = 8000e-6
     N_INLETS: int = 1
     N_OUTLETS: int = 1
 
@@ -30,46 +28,55 @@ class Config:
     # Solver
     CONVERGENCE_TOL: float = 1e-8
 
-    # --- Anderson coupling (replaces Newton–Krylov) ---
+    # Anderson coupling
     ANDERSON_M: int = 5
     ANDERSON_MAXITER: int = 60
-    ANDERSON_BETA: float = 0.005   # relaxation (0.2–0.6 typical)
+    ANDERSON_BETA: float = 0.005
     ANDERSON_DAMPING: float = 1e-10
 
-    # --- Numba switches ---
+    # Numba switches
     USE_NUMBA: bool = True
     NUMBA_PARALLEL: bool = True
 
-    # --- Plot quality / resolution ---
+    # Plot quality / resolution
     FIG_DPI: int = 300
-    FLOW_NX: int = 100
-    FLOW_NY: int = 100
+    FLOW_NX: int = 500
+    FLOW_NY: int = 500
     CONTOUR_LEVELS: int = 60
     STREAM_DENSITY: float = 2.0
 
-    NETWORK_TOPOLOGY = "pressure_web" # Options: "spine", "suction_web", "pressure_web"
+    # Network topology
+    NETWORK_TOPOLOGY: str = "spine"  # "spine", "suction_web", "pressure_web"
 
-    SUCTION_PORE_X_MAX = 0.85
-    FORCE_PORE_AT_XMAX = True
-    XMAX_TARGET_TOL = 0.02
+    # Suction/web selection controls
+    SUCTION_PORE_X_MAX: float = 0.85
+    FORCE_PORE_AT_XMAX: bool = True
+    XMAX_TARGET_TOL: float = 0.02
 
-    N_SUCTION_LOWEST = 3
-    N_SUCTION_BINS = 3
+    N_SUCTION_LOWEST: int = 3
+    N_SUCTION_BINS: int = 3
 
-    MIN_PORE_SPACING = 0.03
-    MIN_PORE_PANEL_GAP = 2
+    MIN_PORE_SPACING: float = 0.03
+    MIN_PORE_PANEL_GAP: int = 2
 
-    N_SPINE_NODES = 6
-    SPINE_Y = 0.0
-    SPINE_X_PAD_LO = 0.15
-    SPINE_X_PAD_HI = 0.95
+    N_SPINE_NODES: int = 6
+    SPINE_Y: float = 0.0
+    SPINE_X_PAD_LO: float = 0.15
+    SPINE_X_PAD_HI: float = 0.95
 
-    PORE_RADIUS_WEB = 0.005
-    PORE_RADIUS_SPINE = 0.005
-    PORE_RADIUS_WEB_TO_SPAR = 0.005
+    PORE_RADIUS_WEB: float = 0.005
+    PORE_RADIUS_SPINE: float = 0.005
+    PORE_RADIUS_WEB_TO_SPAR: float = 0.005
+
+    # Spine topology pore location ranges (x/c)
+    SPINE_INLET_X_MIN: float = 0.98
+    SPINE_INLET_X_MAX: float = 0.99
+
+    SPINE_OUTLET_X_MIN: float = 0.02
+    SPINE_OUTLET_X_MAX: float = 0.20
 
     @property
-    def V_INF(self):
+    def V_INF(self) -> float:
         return (self.REYNOLDS_NUM * self.MU) / (self.RHO * self.CHORD)
 
 
