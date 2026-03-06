@@ -1,21 +1,4 @@
-"""
-aoa_sweep.py
-
-Rewrite of your AoA sweep to match the *new* code structure:
-
-- Uses:
-    from input import Config, AirfoilGenerator
-    from solver import PanelMethod, PorousNetwork, MonolithicCoupledSolverAnderson, compute_forces
-    from plotter import Visualizer
-
-- Coupling is done via MonolithicCoupledSolverAnderson (no manual MAX_ITER / RELAXATION loop).
-- Creates a fresh PanelMethod for each AoA so freestream projections stay consistent.
-- Captures plots for selected angles into per-case subfolders.
-
-Run:
-    python aoa_sweep.py
-"""
-
+# aoa_sweep.py
 import os
 import csv
 import warnings
@@ -54,50 +37,55 @@ class SweepResult:
 
 
 # ==============================================================================
-# 2. UTILS
+# 2. HELPERS
 # ==============================================================================
+def _safe_name(s: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in s).strip("_")
+
+
 def export_cp_distribution_csv(
+    out_path: str,
     alpha_deg: float,
-    Cp_solid: np.ndarray,
-    Cp_porous: np.ndarray,
     X: np.ndarray,
     Y: np.ndarray,
     aero: PanelMethod,
-    out_dir: str,
-    fname: str = "cp_distribution.csv",
+    Cp_solid: np.ndarray,
+    Cp_porous: np.ndarray,
+    V_leakage: Optional[np.ndarray] = None,
 ) -> str:
     """
-    Export Cp distribution (solid + porous) to CSV with panel midpoints computed from X,Y.
+    Export Cp distribution for ONE AoA.
 
     Columns:
-      panel_id, x0, y0, x1, y1, x_mid, y_mid, s, L, nx, ny, Cp_solid, Cp_porous, dCp
+      alpha_deg, panel_id, x0,y0,x1,y1, x_mid,y_mid, s, L, nx, ny, Cp_solid, Cp_porous, dCp, V_leakage
     """
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, fname)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-    X = np.asarray(X).flatten()
-    Y = np.asarray(Y).flatten()
+    X = np.asarray(X).ravel()
+    Y = np.asarray(Y).ravel()
 
-    Np = len(X) - 1
-    if len(Cp_solid) != Np:
-        Np = min(len(Cp_solid), len(X) - 1)
-
+    Np = min(len(X) - 1, aero.N, len(Cp_solid), len(Cp_porous))
     x0, y0 = X[:Np], Y[:Np]
     x1, y1 = X[1 : Np + 1], Y[1 : Np + 1]
     x_mid = 0.5 * (x0 + x1)
     y_mid = 0.5 * (y0 + y1)
 
-    L = np.asarray(aero.L).flatten()[:Np]
-    nx = np.asarray(aero.nx).flatten()[:Np]
-    ny = np.asarray(aero.ny).flatten()[:Np]
-
+    L = np.asarray(aero.L).ravel()[:Np]
+    nx = np.asarray(aero.nx).ravel()[:Np]
+    ny = np.asarray(aero.ny).ravel()[:Np]
     s = np.cumsum(L) - 0.5 * L
+
+    if V_leakage is None:
+        V_leak = np.zeros(Np, dtype=float)
+    else:
+        V_leak = np.asarray(V_leakage).ravel()[:Np]
 
     with open(out_path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow([f"# AoA_deg={alpha_deg}"])
         w.writerow(
             [
+                "alpha_deg",
                 "panel_id",
                 "x0",
                 "y0",
@@ -112,13 +100,14 @@ def export_cp_distribution_csv(
                 "Cp_solid",
                 "Cp_porous",
                 "dCp_porous_minus_solid",
+                "V_leakage",
             ]
         )
-
         for i in range(Np):
             w.writerow(
                 [
-                    i,
+                    float(alpha_deg),
+                    int(i),
                     float(x0[i]),
                     float(y0[i]),
                     float(x1[i]),
@@ -132,14 +121,11 @@ def export_cp_distribution_csv(
                     float(Cp_solid[i]),
                     float(Cp_porous[i]),
                     float(Cp_porous[i] - Cp_solid[i]),
+                    float(V_leak[i]),
                 ]
             )
 
     return out_path
-
-
-def _safe_name(s: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in s).strip("_")
 
 
 # ==============================================================================
@@ -153,12 +139,6 @@ def run_aoa_sweep(
     base_out_dir: str,
     capture_angles: Optional[Sequence[float]] = None,
 ) -> SweepResult:
-    """
-    Runs AoA sweep with your new solver structure:
-    - Solid baseline via PanelMethod.solve(V=0)
-    - Porous coupled via PorousNetwork + MonolithicCoupledSolverAnderson
-    - Optional plot capture at chosen AoAs
-    """
     if capture_angles is None:
         capture_angles = []
 
@@ -168,27 +148,35 @@ def run_aoa_sweep(
     cfg.PORE_RADIUS_INLET = float(r_inlet)
     cfg.PORE_RADIUS_OUTLET = float(r_outlet)
 
-    res = SweepResult(name=label, radius_inlet=r_inlet, radius_outlet=r_outlet)
+    # Case folder
+    case_name = _safe_name(label)
+    case_dir = os.path.join(base_out_dir, case_name)
+    os.makedirs(case_dir, exist_ok=True)
 
-    # Geometry is independent of AoA; generate once
+    # Cp distributions folder
+    cp_dir = os.path.join(case_dir, "cp_distributions")
+    os.makedirs(cp_dir, exist_ok=True)
+
+    # Geometry once
     X, Y = AirfoilGenerator.generate_naca4(cfg.AIRFOIL_NAME, cfg.N_PANELS)
 
-    # We will create a fresh PanelMethod per AoA so freestream projections are consistent.
-    # (Angle is read in PanelMethod.__init__)
+    res = SweepResult(name=label, radius_inlet=r_inlet, radius_outlet=r_outlet)
     pbar = tqdm(list(angles), desc=f"Simulating {label}", unit="deg")
 
-    for alpha in pbar:
-        cfg.ANGLE_OF_ATTACK = float(alpha)
+    # Precompute capture set robustly (float comparisons can be annoying)
+    capture_set = set(float(a) for a in capture_angles)
 
-        # --- SOLID BASELINE ---
+    for alpha in pbar:
+        alpha = float(alpha)
+        cfg.ANGLE_OF_ATTACK = alpha
+
+        # ---------------- SOLID ----------------
         aero_solid = PanelMethod(X, Y, cfg)
         Cp_solid = aero_solid.solve(np.zeros(aero_solid.N, dtype=float))
         CL_s, CD_s = compute_forces(aero_solid, Cp_solid)
 
-        # --- POROUS COUPLED ---
-        # Use a second aero instance for porous (so q/gamma correspond to porous solution)
+        # ---------------- POROUS (Anderson) ----------------
         aero_porous = PanelMethod(X, Y, cfg)
-
         topology = getattr(cfg, "NETWORK_TOPOLOGY", "spine")
         net = PorousNetwork(aero_porous, Cp_solid, cfg, topology=topology)
 
@@ -204,15 +192,14 @@ def run_aoa_sweep(
             verbose=False,
         )
 
-        # Expand leakage velocities to panel array for saving/plotting
         V_leakage = np.zeros(aero_porous.N, dtype=float)
         if len(net.active_pores) > 0:
             V_leakage[np.array(net.active_pores, dtype=int)] = np.clip(v_active, -80.0, 80.0)
 
         CL_p, CD_p = compute_forces(aero_porous, Cp_porous)
 
-        # --- STORE ---
-        res.angles.append(float(alpha))
+        # ---------------- Store polar data ----------------
+        res.angles.append(alpha)
         res.cl_solid.append(float(CL_s))
         res.cd_solid.append(float(CD_s))
         res.cl_porous.append(float(CL_p))
@@ -223,88 +210,57 @@ def run_aoa_sweep(
 
         pbar.set_postfix({"CL_Solid": f"{CL_s:.2f}", "CL_Porous": f"{CL_p:.2f}"})
 
-        # --- CAPTURE PLOTS ---
-        if float(alpha) in [float(a) for a in capture_angles]:
+        # ---------------- ALWAYS export Cp distribution for this AoA ----------------
+        cp_out = os.path.join(cp_dir, f"cp_distribution_AoA_{alpha:+.2f}.csv")
+        export_cp_distribution_csv(
+            out_path=cp_out,
+            alpha_deg=alpha,
+            X=X,
+            Y=Y,
+            aero=aero_porous,
+            Cp_solid=Cp_solid,
+            Cp_porous=Cp_porous,
+            V_leakage=V_leakage,
+        )
+
+        # ---------------- Optional capture plots ----------------
+        if alpha in capture_set:
             cl_change = ((CL_p - CL_s) / (abs(CL_s) + 1e-12)) * 100
             cd_change = ((CD_p - CD_s) / (abs(CD_s) + 1e-12)) * 100
-
-            msg = (
+            pbar.write(
                 f"\n  >>> RESULTS FOR AoA = {alpha}° <<<\n"
                 f"      CL: {CL_s:.5f} (Solid) -> {CL_p:.5f} (Porous) | Change: {cl_change:+.2f}%\n"
                 f"      CD: {CD_s:.5f} (Solid) -> {CD_p:.5f} (Porous) | Change: {cd_change:+.2f}%"
             )
-            pbar.write(msg)
 
-            safe_label = _safe_name(label)
-            sub_folder = os.path.join(base_out_dir, f"{safe_label}_AoA_{alpha:g}")
-            os.makedirs(sub_folder, exist_ok=True)
+            # Make a per-angle plot folder inside this case
+            angle_dir = os.path.join(case_dir, f"AoA_{alpha:+.2f}")
+            os.makedirs(angle_dir, exist_ok=True)
 
-            # Important: Visualizer uses cfg.OUTPUT_DIR relative to script dir,
-            # so we set it to a relative subfolder name rather than an absolute path.
-            # If you prefer absolute output, modify Visualizer accordingly.
-            cfg_cap = Config()
-            cfg_cap.__dict__.update(cfg.__dict__)
-            cfg_cap.OUTPUT_DIR = os.path.relpath(sub_folder, start=os.path.dirname(os.path.abspath(__file__)))
+            # Visualizer writes into cfg.OUTPUT_DIR relative to script directory;
+            # easiest is to set OUTPUT_DIR to a relative path.
+            cfg_plot = Config()
+            cfg_plot.__dict__.update(cfg.__dict__)
+            cfg_plot.OUTPUT_DIR = os.path.relpath(angle_dir, start=os.path.dirname(os.path.abspath(__file__)))
 
-            viz = Visualizer(cfg_cap)
+            viz = Visualizer(cfg_plot)
             viz.save_csv(aero_porous, Cp_porous, Cp_solid, V_leakage, CL_p, CL_s, CD_p, CD_s)
             viz.plot_all(aero_solid, aero_porous, net, Cp_porous, Cp_solid, P_nodes)
 
-            export_cp_distribution_csv(
-                alpha_deg=float(alpha),
-                Cp_solid=Cp_solid,
-                Cp_porous=Cp_porous,
-                X=X,
-                Y=Y,
-                aero=aero_porous,
-                out_dir=sub_folder,
-                fname="cp_distribution.csv",
-            )
-
-            target_img = os.path.join(sub_folder, "01_Geometry_Cp.png")
-            res.capture_image_paths.append(target_img)
+            # Track one image per captured angle to stack later
+            res.capture_image_paths.append(os.path.join(angle_dir, "01_Geometry_Cp.png"))
 
     return res
 
 
 # ==============================================================================
-# 4. IMAGE STACKER & OUTPUT
+# 4. OUTPUT: summaries, plots, stacker
 # ==============================================================================
-def stack_case_images(res: SweepResult, out_dir: str) -> None:
-    if not res.capture_image_paths:
-        return
-
-    images = []
-    for path in res.capture_image_paths:
-        if os.path.exists(path):
-            images.append(Image.open(path))
-
-    if not images:
-        return
-
-    widths, heights = zip(*(i.size for i in images))
-    total_width = max(widths)
-    total_height = sum(heights)
-
-    stacked_im = Image.new("RGB", (total_width, total_height), color=(255, 255, 255))
-    y_offset = 0
-    for im in images:
-        stacked_im.paste(im, (0, y_offset))
-        y_offset += im.size[1]
-
-    safe_name = _safe_name(res.name)
-    out_file = os.path.join(out_dir, f"{safe_name}_Stacked_Cp_Summary.png")
-    stacked_im.save(out_file)
-    print(f"-> Stacked Cp summary created: {out_file}")
-
-
 def save_sweep_summary(cases: List[SweepResult], output_dir: str, filename: str = "polar_summary.csv"):
     os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, filename)
 
-    # Assume same angles list across cases
-    a = np.asarray(cases[0].angles, float)
-
+    aoa = np.asarray(cases[0].angles, float)
     with open(path, "w") as f:
         f.write("--- POLAR SUMMARY ---\n")
 
@@ -314,11 +270,10 @@ def save_sweep_summary(cases: List[SweepResult], output_dir: str, filename: str 
         header += "\n"
         f.write(header)
 
-        for i in range(len(a)):
+        for i in range(len(aoa)):
             cl_s = cases[0].cl_solid[i]
             cd_s = cases[0].cd_solid[i]
-            line = f"{a[i]:.2f},{cl_s:.6f},{cd_s:.6f}"
-
+            line = f"{aoa[i]:.2f},{cl_s:.6f},{cd_s:.6f}"
             for c in cases:
                 clp = c.cl_porous[i]
                 cdp = c.cd_porous[i]
@@ -344,7 +299,6 @@ def plot_polars(cases: List[SweepResult], output_dir: str, filename_prefix: str 
 
     fig1, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig1.suptitle("Aerodynamic Polars Comparison", fontsize=16)
-
     ax1, ax2, ax3, ax4 = axes[0, 0], axes[0, 1], axes[1, 0], axes[1, 1]
 
     # CL vs AoA
@@ -393,7 +347,7 @@ def plot_polars(cases: List[SweepResult], output_dir: str, filename_prefix: str 
     fig1.savefig(os.path.join(output_dir, f"{filename_prefix}_Polars.png"), dpi=200, bbox_inches="tight")
     plt.close(fig1)
 
-    # Percent change plots
+    # Percentage changes
     fig2, (ax5, ax6) = plt.subplots(1, 2, figsize=(14, 5))
     fig2.suptitle("Relative Performance vs Solid Baseline", fontsize=14)
 
@@ -422,6 +376,33 @@ def plot_polars(cases: List[SweepResult], output_dir: str, filename_prefix: str 
     plt.close(fig2)
 
 
+def stack_case_images(res: SweepResult, out_dir: str):
+    if not res.capture_image_paths:
+        return
+
+    images = []
+    for path in res.capture_image_paths:
+        if os.path.exists(path):
+            images.append(Image.open(path))
+
+    if not images:
+        return
+
+    widths, heights = zip(*(im.size for im in images))
+    total_w = max(widths)
+    total_h = sum(heights)
+
+    canvas = Image.new("RGB", (total_w, total_h), color=(255, 255, 255))
+    y = 0
+    for im in images:
+        canvas.paste(im, (0, y))
+        y += im.size[1]
+
+    out_file = os.path.join(out_dir, f"{_safe_name(res.name)}_Stacked_Cp_Summary.png")
+    canvas.save(out_file)
+    print(f"-> Stacked Cp summary created: {out_file}")
+
+
 # ==============================================================================
 # 5. MAIN
 # ==============================================================================
@@ -432,7 +413,7 @@ if __name__ == "__main__":
 
     CONFIG = {
         "AOA_RANGE": np.arange(-5.0, 10.1, 1.0),
-        "CP_ANGLES": [-5.0, 5.0, 10.0],
+        "CAPTURE_ANGLES": [-5.0, 5.0, 10.0],
         "C1_RIN": 10000e-6,
         "C1_ROUT": 12000e-6,
         "C2_RIN": 10000e-6,
@@ -440,21 +421,21 @@ if __name__ == "__main__":
     }
 
     res1 = run_aoa_sweep(
-        CONFIG["AOA_RANGE"],
-        CONFIG["C1_RIN"],
-        CONFIG["C1_ROUT"],
-        "Large Ports",
-        SWEEP_OUT_DIR,
-        capture_angles=CONFIG["CP_ANGLES"],
+        angles=CONFIG["AOA_RANGE"],
+        r_inlet=CONFIG["C1_RIN"],
+        r_outlet=CONFIG["C1_ROUT"],
+        label="Large Ports",
+        base_out_dir=SWEEP_OUT_DIR,
+        capture_angles=CONFIG["CAPTURE_ANGLES"],
     )
 
     res2 = run_aoa_sweep(
-        CONFIG["AOA_RANGE"],
-        CONFIG["C2_RIN"],
-        CONFIG["C2_ROUT"],
-        "Small Ports",
-        SWEEP_OUT_DIR,
-        capture_angles=CONFIG["CP_ANGLES"],
+        angles=CONFIG["AOA_RANGE"],
+        r_inlet=CONFIG["C2_RIN"],
+        r_outlet=CONFIG["C2_ROUT"],
+        label="Small Ports",
+        base_out_dir=SWEEP_OUT_DIR,
+        capture_angles=CONFIG["CAPTURE_ANGLES"],
     )
 
     cases = [res1, res2]
@@ -466,3 +447,4 @@ if __name__ == "__main__":
     stack_case_images(res2, SWEEP_OUT_DIR)
 
     print(f"\n-> Completed. Main results saved to: {SWEEP_OUT_DIR}")
+    print("-> Cp distribution CSVs saved under: aoa_sweep_results/<CaseName>/cp_distributions/")
