@@ -1,0 +1,47 @@
+GENERAL :
+    AoA_sweep = np.linspace(-5,5,11)
+    NumPan_sweep = np.array([250,500,1000])
+    Vinf = 1                                                                        # Freestream velocity [] (just leave this at 1)
+    rhoinf = 1                                                                      # Density [] (just leave this at 1)
+    Re = 160000                                                                      # Reynolds number
+    power = 1
+    NameAirfoil = "0018"
+    max_iter = 100                          # Max number of iterations
+    tol = 1e-8                              # Convergence tolerance
+    err = 100                               # Initial error value (arbitrary)
+
+CASE 2 : 
+    type = 'rectangle'
+    pore_geometry = [0.157,0.007]
+    L = 0.89
+    a = 0.007                       #Height of the pores
+    n = 1/0.166
+    y0 = -0.01
+    angle_pore = 0
+
+CASE 3 : 
+    type = 'rectangle'
+    pore_geometry = [0.157,0.007]
+    L = 0.89
+    a = 0.007                       #Height of the pores
+    n = 1/0.166
+    y0 = 0.2
+    angle_pore = 90
+
+CASE 5:
+    type = 'rectangle'
+    pore_geometry = [0.157,0.007]
+    L = 0.89
+    a = 0.007                       #Height of the pores
+    n = 1/0.166
+    y0 = -0.01
+    angle_pore = -10
+
+CASE 6:
+    type = 'rectangle'
+    pore_geometry = [0.157,0.007]
+    L = 0.89
+    a = 0.007                       #Height of the pores
+    n = 1/0.166
+    y0 = 0.2
+    angle_pore = 90

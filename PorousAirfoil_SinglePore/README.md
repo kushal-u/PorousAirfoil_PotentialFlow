@@ -1,4 +1,4 @@
-# PorousAirfoil_PotentialFlow
+# PorousAirfoil_SinglePore
 
 This repository implements a **Source Panel Method with Vortex correction (SPVP)** to simulate airflow around NACA airfoils and compute pressure distributions, lift coefficients (CL), and moment coefficients (CM). The tool also compares results against reference data generated using **XFOIL**.
 
