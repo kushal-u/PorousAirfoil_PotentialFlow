@@ -1,0 +1,6 @@
+NACA 0018
+PANE
+OPER
+ALFA 4.0
+CPWR xfoil_cp_0018_a4.000.txt
+QUIT

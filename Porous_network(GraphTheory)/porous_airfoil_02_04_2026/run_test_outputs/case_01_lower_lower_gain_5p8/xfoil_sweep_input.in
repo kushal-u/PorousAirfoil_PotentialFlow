@@ -1,0 +1,10 @@
+NACA 0018
+PANE
+OPER
+PACC
+xfoil_polar_sweep_0018_a-5.0_to_12.0_step_1.0.txt
+
+ASEQ -5.0 12.0 1.0
+PACC
+
+QUIT
