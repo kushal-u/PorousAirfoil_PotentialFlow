@@ -38,7 +38,9 @@ porous_airfoil_panel_method/
 ├── docs/
 │   ├── FILE_REFERENCE.md          # detailed Python file descriptions
 │   └── CONFIG_REFERENCE.md        # detailed configuration variable definitions
-
+└── legacy/
+    ├── README.md
+    └── run_optimization_legacy.py # preserved older optimisation script
 ```
 
 ## Quick start
@@ -90,7 +92,7 @@ MAKE_CONTOUR_PLOTS = True       # set False for a faster run
 To run only the saved two-passage case:
 
 ```python
-SELECTED_MODEL = "all"
+SELECTED_MODEL = "model_4_saved_case_1"
 ```
 
 ### 4. Run
@@ -197,8 +199,10 @@ See:
 - [`docs/FILE_REFERENCE.md`](docs/FILE_REFERENCE.md)
 - [`docs/CONFIG_REFERENCE.md`](docs/CONFIG_REFERENCE.md)
 
+## Legacy optimisation script
 
+The older optimisation runner is preserved under `legacy/run_optimization_legacy.py`. It depends on project files that are not part of the current fixed-model workflow, especially `porous_network_optimisation.py`. Use `run.py` or `run_porous_models.py` for the current supported repository.
 
 ## License
 
-No license has been selected in this prepared version. Before publishing publicly on GitHub, add a `LICENSE` file that matches how you want others to use the code.
+This project is released under the MIT License. See [`LICENSE`](LICENSE) for the full license text.
