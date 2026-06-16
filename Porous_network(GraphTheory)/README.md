@@ -199,9 +199,6 @@ See:
 - [`docs/FILE_REFERENCE.md`](docs/FILE_REFERENCE.md)
 - [`docs/CONFIG_REFERENCE.md`](docs/CONFIG_REFERENCE.md)
 
-## Legacy optimisation script
-
-The older optimisation runner is preserved under `legacy/run_optimization_legacy.py`. It depends on project files that are not part of the current fixed-model workflow, especially `porous_network_optimisation.py`. Use `run.py` or `run_porous_models.py` for the current supported repository.
 
 ## License
 
