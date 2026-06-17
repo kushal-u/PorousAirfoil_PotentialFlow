@@ -200,6 +200,3 @@ See:
 - [`docs/CONFIG_REFERENCE.md`](docs/CONFIG_REFERENCE.md)
 
 
-## License
-
-This project is released under the MIT License. See [`LICENSE`](LICENSE) for the full license text.
