@@ -2,7 +2,7 @@
 
 A Python research code for comparing **solid** and **porous** NACA 4-digit airfoils using a source-vortex panel method coupled to simplified internal hydraulic-resistance channels.
 
-The current supported workflow runs fixed porous-network layouts, compares them against a solid-airfoil panel-method baseline, optionally compares against XFOIL, and exports CSV tables, Matplotlib plots, and ParaView-compatible VTK files.
+The current supported workflow runs fixed porous-network layouts, compares them against a solid-airfoil panel-method baseline, compares against XFOIL, and exports CSV tables, Matplotlib plots, and ParaView-compatible VTK files.
 
 ## Main features
 
@@ -38,9 +38,6 @@ porous_airfoil_panel_method/
 ├── docs/
 │   ├── FILE_REFERENCE.md          # detailed Python file descriptions
 │   └── CONFIG_REFERENCE.md        # detailed configuration variable definitions
-└── legacy/
-    ├── README.md
-    └── run_optimization_legacy.py # preserved older optimisation script
 ```
 
 ## Quick start
@@ -179,18 +176,7 @@ Open the `.pvd` files in ParaView:
 
 For AoA sweeps, the angle of attack is stored as the ParaView timestep.
 
-## Important numerical notes
 
-- The internal-channel model uses laminar circular Poiseuille resistance:
-
-  ```text
-  Rs = 128 μ L / (π D⁴)
-  Q  = Δp / Rs
-  ```
-
-- Channel diameter strongly affects coupling strength because hydraulic resistance scales with `D^-4`. Increasing diameter can dramatically increase `Q` and surface transpiration velocity, which can make the fixed-point coupling harder to converge.
-- For difficult cases, reduce `COUPLING.relaxation`, reduce pore diameter, or increase `COUPLING.max_iter` in `porous_config.py`.
-- Very high contour resolutions, for example `1000 x 1000`, can be slow. Set `MAKE_CONTOUR_PLOTS = False` or lower `CONTOUR_NX` and `CONTOUR_NY` for quick checks.
 
 ## Detailed file and variable documentation
 
