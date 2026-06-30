@@ -1,75 +1,188 @@
-# PorousAirfoil_PotentialFlow
+# Porous Airfoil Panel Method
 
-This repository implements a **Source Panel Method with Vortex correction (SPVP)** to simulate airflow around NACA airfoils and compute pressure distributions, lift coefficients (CL), and moment coefficients (CM). The tool also compares results against reference data generated using **XFOIL**.
+A Python research code for comparing **solid** and **porous** NACA 4-digit airfoils using a source-vortex panel method coupled to simplified internal hydraulic-resistance channels.
 
----
+The current supported workflow runs fixed porous-network layouts, compares them against a solid-airfoil panel-method baseline, compares against XFOIL, and exports CSV tables, Matplotlib plots, and ParaView-compatible VTK files.
 
-## 🗂️ Repository Structure
+## Main features
 
-- `AoA_Sweep.py`  
-  This script compares the aerodynamic performance of a porous and a solid airfoil using the SPVP method across a range of angles of attack. It computes and plots the lift (CL), drag (CD), and lift-to-drag ratio (CL/CD) for both configurations.
+- NACA 4-digit airfoil generation with cosine-spaced panels.
+- Source-vortex panel-method solver with Kutta condition.
+- Fixed porous-channel models:
+  - `model_1_9_chordwise`: 9 leading-edge to trailing-edge internal channels.
+  - `model_2_9_perpendicular`: 9 lower-to-upper channels.
+  - `model_3_combined_independent`: Models 1 and 2 combined as independent passages.
+  - `model_4_saved_case_1`: saved two-passage validation/design case.
+- Fixed-point coupling between surface pressure, internal flow rate, and surface transpiration velocity.
+- Optional XFOIL Cp and angle-of-attack sweep comparison.
+- CSV outputs for surface data, passage data, model summaries, and AoA sweeps.
+- Matplotlib plots for airfoil layout, Cp distribution, aerodynamic sweep, and contour comparisons.
+- ParaView `.vtp`, `.vts`, and `.pvd` exports for surface, porous-network, flow-field, and AoA sweep visualisation.
 
-- `SPVP_Airfoil.py`  
-  This script implements the Source and Vortex Panel Method (SPVP) to compute the pressure distribution, lift, moment, and drag coefficients of a NACA 4-digit airfoil. It supports both porous and solid configurations and provides detailed visualizations of aerodynamic quantities.
+## Repository layout
 
-- `PLOT.py`  
-    This module provides a suite of visualization tools for the SPVP method, including plots for airfoil geometry, normal vectors, pressure coefficients, streamlines, and pressure contours.
+```text
+porous_airfoil_panel_method/
+├── run.py                         # simple GitHub-style entry point
+├── run_porous_models.py           # main fixed-model runner
+├── porous_config.py               # user-editable simulation settings and dataclasses
+├── porous_core.py                 # porous-network model definitions, coupling, CSV/sweep logic
+├── solver.py                      # NACA geometry and source-vortex panel solver
+├── plotter.py                     # Matplotlib plotting utilities
+├── paraview_export.py             # ASCII VTK/ParaView export utilities
+├── xfoil.py                       # optional XFOIL runner and parser
+├── requirements.txt               # required Python dependencies
+├── requirements-optional.txt      # optional acceleration dependencies
+├── pyproject.toml                 # project metadata and tooling config
+├── .gitignore                     # ignores generated outputs and local files
+├── docs/
+│   ├── FILE_REFERENCE.md          # detailed Python file descriptions
+│   └── CONFIG_REFERENCE.md        # detailed configuration variable definitions
+```
 
-- `COMPUTATION/`  
-  - `COMPUTE.py`: It includes functions to build influence matrices, solve the linear system, and compute lift, drag, and moment coefficients based on airfoil geometry and flow characteristics.
-  - `Hydraulic_Resistance.py`: Models resistances for porous airfoil simulation.
+## Quick start
 
-- `GEOMETRY/`  
-  - `GEOMETRY.py`: Constructs panel geometry for the airfoil.  
-  - `Hydraulic_GEOMETRY.py`: Adapts geometry for porous surfaces.  
-  - `NACA.py`: Generates 4-digit NACA airfoil coordinates.  
-  - `PANEL_DIRECTION.py`: Changes the panels directions if needed.
-
-- `X_FOIL/`  
-  - `X_FOIL.py`: Reads XFOIL-generated data files.  
-  - `X_FOIL_DATA/`: Directory containing `.dat` files exported from XFOIL.
-
-- `Example1.py`
-  This example demonstrates the SPVP panel method to simulate a solid airfoil’s aerodynamics by defining its geometry, calculating aerodynamic coefficients, and visualizing pressure distribution and streamlines.
-
-- `Example2.py`
-  This example applies the panel method to porous airfoils, computing aerodynamic coefficients and visualizing differences with solid airfoils.
-
----
-
-## ⚙️ Features
-
-- **SPVP Solver**  
-  Models inviscid, incompressible flow using source and vortex panels.
-
-- **Lift and Moment Computation**  
-  Integrates pressure distribution to compute CL and CM.
-
-- **XFOIL Integration**  
-  Imports `.dat` files generated with XFOIL for validation and comparison.
-
-- **Porous Surface Modeling**  
-  Adds porous resistance through hydraulic modeling components.
-
----
-
-## 🚀 Getting Started
-
-### 1. Requirements
-
-Install required dependencies:
+### 1. Create and activate a virtual environment
 
 ```bash
-pip install numpy 
-pip install matplotlib
-pip install scipy
+python -m venv .venv
 ```
-### 2. Examples
 
-#### Example 1 : Solid Airfoil
-This example demonstrates the use of the panel method (SPVP) to simulate the aerodynamic behavior of a solid airfoil.  
-It shows how to define the airfoil geometry, compute aerodynamic coefficients, and visualize results such as pressure distribution and streamlines.
+Windows PowerShell:
 
-#### Example 2 : Porous Airfoil
+```powershell
+.venv\Scripts\Activate.ps1
+```
 
-This example demonstrates the application of the panel method adapted for porous airfoils. It computes the aerodynamic coefficients and pressure distributions for a NACA 4-digit airfoil with porous panels, accounting for hydraulic resistance and pore geometry effects. Various plots visualize the flow characteristics and compare porous versus solid airfoil results.
+macOS/Linux:
+
+```bash
+source .venv/bin/activate
+```
+
+### 2. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+Optional acceleration for large contour grids:
+
+```bash
+pip install -r requirements-optional.txt
+```
+
+### 3. Configure the case
+
+Open `porous_config.py` and edit the user settings. The most common variables are:
+
+```python
+SELECTED_MODEL = "all"          # or one model name
+AIRFOIL_NAME = "0018"           # NACA 4-digit airfoil
+N_PANELS = 1000                 # panel discretisation
+REYNOLDS_EXTERNAL = 5.0e5       # chord Reynolds number
+AOA_DEG = 4.0                   # fixed-case angle of attack
+PORE_DIAMETER = 0.0040          # common diameter for Models 1-3 [m]
+MAKE_CONTOUR_PLOTS = True       # set False for a faster run
+```
+
+To run only the saved two-passage case:
+
+```python
+SELECTED_MODEL = "model_4_saved_case_1"
+```
+
+### 4. Run
+
+```bash
+python run.py
+```
+
+Equivalent:
+
+```bash
+python run_porous_models.py
+```
+
+Results are written to:
+
+```text
+run_porous_models_outputs/
+```
+
+## XFOIL setup, optional
+
+The panel-method code does not require XFOIL. If XFOIL is unavailable, the program skips XFOIL Cp and polar comparisons and still runs the panel/porous model.
+
+Recommended setup:
+
+Windows PowerShell:
+
+```powershell
+$env:XFOIL_EXE="C:\path\to\xfoil.exe"
+```
+
+macOS/Linux:
+
+```bash
+export XFOIL_EXE=/path/to/xfoil
+```
+
+You can also disable XFOIL explicitly:
+
+Windows PowerShell:
+
+```powershell
+$env:USE_XFOIL="0"
+```
+
+macOS/Linux:
+
+```bash
+export USE_XFOIL=0
+```
+
+## Output files
+
+For each selected model, the runner creates a folder such as:
+
+```text
+run_porous_models_outputs/model_1_9_chordwise/
+```
+
+Typical outputs include:
+
+- `passage_summary.csv`: pore positions, channel lengths, pressure drops, flow rates, hydraulic resistance, and equivalent internal Reynolds numbers.
+- `surface_data.csv`: panel-level Cp, tangential velocity, solid/porous differences, and normal transpiration velocity.
+- `model_summary.csv`: lift, drag, moment, convergence, and runtime summary for one model.
+- `aoa_sweep_comparison.csv`: porous and solid panel-method aerodynamic coefficients over the configured AoA range.
+- `airfoil_with_porous_network.png`: airfoil layout with pores/channels and flow-direction arrows.
+- `cp_distribution_with_xfoil.png`: porous, solid, and optional XFOIL Cp comparison.
+- `aoa_sweep_CL_CD_CM.png`: CL, CD, and CM versus angle of attack.
+- `paraview_results.pvd` plus `.vtp` and `.vts` files: ParaView visualisation outputs.
+
+The repository root output also includes:
+
+- `all_models_summary.csv`: one-row summary per selected model.
+- `solid_reference_paraview/`: ParaView files for the solid-airfoil baseline.
+
+## ParaView usage
+
+Open the `.pvd` files in ParaView:
+
+- Single fixed model: `model_name/paraview_results.pvd`
+- Solid reference: `solid_reference_paraview/paraview_solid_reference.pvd`
+- AoA sweep: `model_name/aoa_sweep_paraview/paraview_aoa_sweep_all_parts.pvd`
+
+For AoA sweeps, the angle of attack is stored as the ParaView timestep.
+
+
+
+## Detailed file and variable documentation
+
+See:
+
+- [`docs/FILE_REFERENCE.md`](docs/FILE_REFERENCE.md)
+- [`docs/CONFIG_REFERENCE.md`](docs/CONFIG_REFERENCE.md)
+
+
